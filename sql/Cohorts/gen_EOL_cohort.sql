@@ -7,8 +7,6 @@
     - Patient over the age of 70 at prediction time
 */
 
-create table {schema_name}.{cohort_table_name} as
-
 with
     death_dates as (
         select
@@ -124,5 +122,4 @@ with
             d.death_datetime is null
             or d.death_datetime >= (date '{training_end_date}' + interval '{gap}')
         )
-    ;
 
