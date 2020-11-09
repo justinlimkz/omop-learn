@@ -80,7 +80,7 @@ class FeatureSet():
         else:
             self._nontemporal_features.append(feature)
 
-    def add_default_features(self, default_features, schema_name=None, cohort_name=None):
+    def add_default_features(self, default_features, omop_cdm_schema=None, cohort_table_name=None):
         fns = [
             './sql/Features/{}.sql'.format(f)
             for f in default_features
@@ -89,11 +89,13 @@ class FeatureSet():
             feature = Feature(
                 fn,
                 {
-                    'cdm_schema':config.OMOP_CDM_SCHEMA,
-                    'cohort_table':'{}.{}'.format(
-                        schema_name,
-                        cohort_name
-                    )
+#                     'cdm_schema':config.OMOP_CDM_SCHEMA,
+#                     'cohort_table':'{}.{}'.format(
+#                         schema_name,
+#                         cohort_name
+#                     )
+                    'cdm_schema': omop_cdm_schema,
+                    'cohort_table': cohort_table_name
                 }
             )
             self.add(feature)
@@ -106,16 +108,37 @@ class FeatureSet():
             self._temporal_feature_names +  self._nontemporal_feature_names
         )
 
-    def build(self, cohort, cache_file='/tmp/store.csv', from_cached=False):
+    def build(self, 
+              omop_cdm_schema=None, 
+              cohort_table_name=None,
+              cohort_generation_script=None,
+              cohort_generation_kwargs=None,
+              first=None,
+              verbose=True,
+              outcome_col_name='y',
+              cache_file='/tmp/store.csv', 
+              from_cached=False):
+
+        # Generate cohort here
+        with open(cohort_generation_script, 'r') as f:
+            cohort_generation_sql_raw = f.read()
+            
         # sep_col = self.id_col
-        joined_sql = "{} order by {} asc".format(
+        joined_sql = """with {} as ({}) 
+                        select 
+                            example_id,
+                            person_id,
+                            concept_name,
+                            feature_start_date,
+                            person_start_date,
+                            person_end_date
+                        from ({}) as t
+                        order by {} asc""".format(cohort_table_name, 
+                                                              cohort_generation_sql_raw.format(**cohort_generation_kwargs),
             " union all ".join(
                     f._sql_raw.format(
-                        cdm_schema=config.OMOP_CDM_SCHEMA,
-                        cohort_table='{}.{}'.format(
-                            cohort._schema_name,
-                            cohort._cohort_table_name
-                        )
+                        cdm_schema=omop_cdm_schema,
+                        cohort_table=cohort_table_name
                     )
                 for f in self._temporal_features
             ),
@@ -123,27 +146,35 @@ class FeatureSet():
                       # sep_col, 
                       self.time_col, self.feature_col])    
         )
+#         print(joined_sql)
         if not from_cached:
-            copy_sql = """
-                copy 
-                    ({query})
-                to 
-                    stdout 
-                with 
-                    csv {head}
-            """.format(
-                query=joined_sql,
-                head="HEADER"
-            )
+#             copy_sql = """
+#                 copy 
+#                     ({query})
+#                 to 
+#                     stdout 
+#                 with 
+#                     csv {head}
+#             """.format(
+#                 query=joined_sql,
+#                 head="HEADER"
+#             )
             t = time.time()
             conn = self._db.engine.raw_connection()
-            cur = conn.cursor()
-            store = open(cache_file,'wb')
-            cur.copy_expert(copy_sql, store)
-            store.seek(0)
+#             cur = conn.cursor()
+#             store = open(cache_file,'wb')
+#             cur.copy_expert(copy_sql, store)
+            result = pd.read_sql(joined_sql, conn) 
+            print(result.shape)
+#             print(result.columns)
+            result.to_csv(cache_file)
+#             store.seek(0)
             print('Data loaded to buffer in {0:.2f} seconds'.format(
                 time.time()-t
             ))
+    
+             # Get outcomes separately
+            cohort = pd.read_sql(cohort_generation_sql_raw.format(**cohort_generation_kwargs), conn)
             
         t = time.time()
         store = open(cache_file,'rb')
@@ -167,7 +198,7 @@ class FeatureSet():
         t = time.time()
         store.seek(0)
 #         self.ids = cohort._cohort[self.id_col].unique()
-        self.ids = cohort._cohort[self.unique_id_col].unique()
+#         self.ids = cohort._cohort[self.unique_id_col].unique()
 #         self.id_map = {i:person_id for i,person_id in enumerate(self.seen_ids)}
 #         self.id_map_rev = {person_id:i for i,person_id in enumerate(self.seen_ids)}
         self.id_map = {i:example_id for i,example_id in enumerate(self.seen_ids)}
@@ -229,21 +260,25 @@ class FeatureSet():
         print('Generated Sparse Representation of Data in {0:.2f} seconds'.format(
             time.time() - t
         ))
+        
+        return cohort
 
     def get_sparr_rep(self):
         return self._spm_arr
         
-
-
-def postprocess_feature_matrix(cohort, featureSet, training_end_date_col='training_end_date'):
+def postprocess_feature_matrix(cohort,
+                               featureSet,
+                               training_end_date_col='training_end_date',
+                               cohort_generation_kwargs=None):
     feature_matrix_3d = featureSet.get_sparr_rep()
 #     outcomes = cohort._cohort.set_index('person_id').loc[
 #         sorted(featureSet.seen_ids)
 #     ]['y']
-    outcomes = cohort._cohort.set_index('example_id').loc[
-        sorted(featureSet.seen_ids)
-    ]['y']
-    outcomes = cohort._cohort['y']
+#     outcomes = cohort.set_index('example_id').loc[
+#         sorted(featureSet.seen_ids)
+#     ]['y']
+#     outcomes = cohort._cohort['y']
+    outcomes = cohort['y']
     good_feature_ix = [
         i for i in sorted(featureSet.concept_map)
         if '- No matching concept' not in featureSet.concept_map[i]
@@ -254,7 +289,7 @@ def postprocess_feature_matrix(cohort, featureSet, training_end_date_col='traini
     ]
     good_time_ixs = [
         i for i in sorted(featureSet.time_map)
-        if featureSet.time_map[i] <= cohort._cohort_generation_kwargs[training_end_date_col]
+        if featureSet.time_map[i] <= cohort_generation_kwargs[training_end_date_col]
     ]
     feature_matrix_3d = feature_matrix_3d[good_feature_ix, :, :]
     feature_matrix_3d = feature_matrix_3d[:, good_time_ixs, :]

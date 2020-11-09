@@ -1,6 +1,6 @@
 select 
-    b.example_id,
-    a.person_id,
+    b.example_id as example_id,
+    a.person_id as person_id,
     a.drug_concept_id || ' - drug - ' || coalesce (
         c.concept_name, 'no match'
     ) as concept_name,

@@ -61,8 +61,8 @@ class Database(object):  # noqa
         '''
         with self._session_scope() as session:
 
-            drop_sql = "drop table if exists {}".format(table_name)
-            session.execute(sqlalchemy.text(drop_sql))
+            # drop_sql = "drop table if exists {}".format(table_name)
+            # session.execute(sqlalchemy.text(drop_sql))
             
             session.execute(sqlalchemy.text(sql))
             session.commit()
